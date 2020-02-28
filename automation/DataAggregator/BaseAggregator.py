@@ -52,7 +52,7 @@ class BaseListener(object):
         self._last_update = time.time()  # last status update time
         self.record_queue = None  # Initialized on `startup`
         self.logger = logging.getLogger('openwpm')
-        self.in_progress_map = dict()  # maps crawl_id to visit_id
+        self.browser_map = dict()  # maps crawl_id to visit_id
 
     @abc.abstractmethod
     def process_record(self, record):
@@ -73,6 +73,17 @@ class BaseListener(object):
         record : tuple
             2-tuple in format (table_name, data). `data` is a 2-tuple of the
             for (content, content_hash)"""
+
+    @abc.abstractmethod
+    def visit_done(self, visit_id: int, is_shutdown: bool = False):
+        """Will be called once a visit_id will receive no new records
+
+        Parameters
+        ----------
+        visit_id
+            the id that will receive no more updates
+        is_shutdowb
+            if this call is made during shutdown"""
 
     def startup(self):
         """Run listener startup tasks
@@ -109,30 +120,28 @@ class BaseListener(object):
            Some data should contain a visit_id and a crawl_id, but the method
            handles both being not set
         """
-        visit_id = None
-        crawl_id = None
+
         # All data records should be keyed by the crawler and site visit
         try:
             visit_id = data['visit_id']
         except KeyError:
             self.logger.error("Record for table %s has no visit id" % table)
             self.logger.error(json.dumps(data))
-            pass
+            return
 
         try:
             crawl_id = data['crawl_id']
         except KeyError:
             self.logger.error("Record for table %s has no crawl id" % table)
             self.logger.error(json.dumps(data))
-            pass
-
-        if crawl_id is not None and visit_id is not None:
-            # Check if the browser for this record has moved on to a new visit
-            if crawl_id not in self.in_progress_map:
-                self.in_progress_map[crawl_id] = visit_id
-            elif self.in_progress_map[crawl_id] != visit_id:
-                self.mark_visit_id_done(self.in_progress_map[crawl_id])
-                self.in_progress_map[crawl_id] = visit_id
+            return
+        # Check if the browser for this record has moved on to a new visit
+        if crawl_id not in self.browser_map:
+            self.browser_map[crawl_id] = visit_id
+        elif self.browser_map[crawl_id] != visit_id:
+            self.mark_visit_id_done(self.browser_map[crawl_id])
+            self.visit_done(self.browser_map[crawl_id])
+            self.browser_map[crawl_id] = visit_id
 
     def mark_visit_id_done(self, visit_id: int):
         """ This function should be called to indicate that all records
@@ -144,11 +153,10 @@ class BaseListener(object):
 
     def shutdown(self):
         """Run shutdown tasks defined in the base listener
-
         Note: Child classes should call this method"""
         self.sock.close()
-        for visit_id in self.in_progress_map.values():
-            self.mark_visit_id_done(visit_id)
+        for visit_id in self.browser_map.values():
+            self.mark_visit_id_done(visit_id, is_shutdown=True)
 
     def drain_queue(self):
         """ Ensures queue is empty before closing """
@@ -243,7 +251,7 @@ class BaseAggregator(object):
     def launch(self, listener_process_runner, *args):
         """Launch the aggregator listener process"""
         args = ((self.status_queue,
-                self.completion_queue, self.shutdown_queue),) + args
+                 self.completion_queue, self.shutdown_queue),) + args
         self.listener_process = Process(
             target=listener_process_runner,
             args=args

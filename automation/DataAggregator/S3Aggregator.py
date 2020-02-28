@@ -65,7 +65,6 @@ class S3Listener(BaseListener):
 
     def __init__(self, base_params, manager_params, instance_id):
         self.dir = manager_params['s3_directory']
-        self.browser_map = dict()  # maps crawl_id to visit_id
         self._records = dict()  # maps visit_id and table to records
         self._batches = dict()  # maps table_name to a list of batches
         self._instance_id = instance_id
@@ -258,27 +257,7 @@ class S3Listener(BaseListener):
             self.process_content(record)
             return
 
-        # All data records should be keyed by the crawler and site visit
-        try:
-            visit_id = data['visit_id']
-        except KeyError:
-            self.logger.error("Record for table %s has no visit id" % table)
-            self.logger.error(json.dumps(data))
-            return
-        try:
-            crawl_id = data['crawl_id']
-        except KeyError:
-            self.logger.error("Record for table %s has no crawl id" % table)
-            self.logger.error(json.dumps(data))
-            return
-
-        # Check if the browser for this record has moved on to a new visit
-        if crawl_id not in self.browser_map:
-            self.browser_map[crawl_id] = visit_id
-        elif self.browser_map[crawl_id] != visit_id:
-            self._create_batch(self.browser_map[crawl_id])
-            self._send_to_s3()
-            self.browser_map[crawl_id] = visit_id
+        self.update_records(table, data)
 
         # Convert data to text type
         for k, v in data.items():
@@ -306,12 +285,9 @@ class S3Listener(BaseListener):
         fname = "%s/%s/%s.gz" % (self.dir, CONTENT_DIRECTORY, content_hash)
         self._write_str_to_s3(content, fname)
 
-    def drain_queue(self):
-        """Process remaining records in queue and sync final files to S3"""
-        super(S3Listener, self).drain_queue()
-        for visit_id in self.browser_map.values():
-            self._create_batch(visit_id)
-        self._send_to_s3(force=True)
+    def visit_done(self, visit_id: int, is_shutdown: bool = False):
+        self._create_batch(visit_id)
+        self._send_to_s3(force=is_shutdown)
 
 
 class S3Aggregator(BaseAggregator):

@@ -164,6 +164,9 @@ class LocalListener(BaseListener):
             self._ldb_counter = 0
             self._ldb_commit_time = time.time()
 
+    def visit_done(self, visit_id: int, is_shutdown: bool = False):
+        pass
+
     def shutdown(self):
         self.db.commit()
         self.db.close()
